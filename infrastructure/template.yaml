@@ -10,11 +10,10 @@ Parameters:
     Description: 'Environment for the resources'
   ExistingBucketName:
     Type: String
-    Default: 'user-dev-190291479148'  # Replace with your actual bucket name
     Description: 'Name of the existing S3 bucket to use'
   CodeS3Key:
     Type: String
-    Description: 'the s3 key code which contains the handlers'
+    Description: 'S3 key for the code package'
 Resources:
   ApiGatewayCloudWatchLogsRole:
     Type: AWS::IAM::Role
