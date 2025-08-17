@@ -1,0 +1,25 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 18
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - cd src/lambda
+      - npm ci
+  build:
+    commands:
+      - echo Build started on `date`
+      - cd ../../
+      # Package Lambda function
+      - zip -r user-functions.zip src/lambda/
+  post_build:
+    commands:
+      - echo Build completed on `date`
+
+artifacts:
+  files:
+    - user-functions.zip
+    - infrastructure/template.yaml

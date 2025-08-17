@@ -1,0 +1,460 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  Environment:
+    Type: String
+    Default: 'dev'
+    AllowedValues:
+      - dev
+      - prod
+      - test
+    Description: 'Environment for the resources'
+  ExistingBucketName:
+    Type: String
+    Default: 'user-dev-190291479148'  # Replace with your actual bucket name
+    Description: 'Name of the existing S3 bucket to use'
+  CodeS3Key:
+    Type: String
+    Description: 'the s3 key code which contains the handlers'
+Resources:
+  ApiGatewayCloudWatchLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchLogsRole.Arn
+  userDynamodbTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: id     # Only for HASH key
+          AttributeType: S
+        - AttributeName: email  # Only for GSI
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: EmailIndex
+          KeySchema:
+            - AttributeName: email
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL  # Includes ALL attributes (including username)
+          ProvisionedThroughput:
+            ReadCapacityUnits: 5
+            WriteCapacityUnits: 5
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      TableName: !Sub 'user-${Environment}'
+  userpool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub 'userpool-${Environment}'
+      AliasAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+  userPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub 'userpool-client-${Environment}'
+      UserPoolId: !Ref userpool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH   # Allows USER_PASSWORD_AUTH (username/password login)
+        - ALLOW_REFRESH_TOKEN_AUTH   # Allows refresh tokens
+        - ALLOW_USER_SRP_AUTH        # Secure Remote Password (SRP) flow
+      SupportedIdentityProviders:
+        - COGNITO
+  iamRoleGetUser:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CloudWatchLogsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: "*"
+        - PolicyName: GetUserPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "dynamodb:GetItem"
+                  - "dynamodb:Query"
+                  - "dynamodb:Scan"
+                Resource: !GetAtt userDynamodbTable.Arn
+  lambdaFunctionGetUser:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: 'Lambda function to get user details'
+      FunctionName: getUserFunction 
+      Handler: getUser.handler
+      MemorySize: 128
+      Role: !GetAtt iamRoleGetUser.Arn
+      Runtime: nodejs18.x
+      Timeout: 60 # Timeout in seconds  
+      Code: 
+        S3Bucket: !Ref ExistingBucketName
+        S3Key: !Ref CodeS3Key
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref userDynamodbTable
+      Tags:
+        - Key: GetUserFunction
+          Value: lambdaFunctionGetUser
+  UserApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: UserApi
+      Description: 'API for Getting user details'
+  userAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: !Sub 'userAuthorizer-${Environment}'
+      RestApiId: !Ref UserApi
+      Type: COGNITO_USER_POOLS
+      IdentitySource: method.request.header.Authorization
+      ProviderARNs:
+        - !GetAtt userpool.Arn
+  UsertApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt UserApi.RootResourceId
+      PathPart: users
+      RestApiId: !Ref UserApi
+  UserIDApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref UsertApiResource
+      PathPart: '{id}'
+      RestApiId: !Ref UserApi
+  methodGetUser:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref userAuthorizer
+      HttpMethod: GET
+      ResourceId: !Ref UserIDApiResource
+      RestApiId: !Ref UserApi
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaFunctionGetUser.Arn}/invocations'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,PUT,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+      - StatusCode: 200
+        ResponseParameters:
+          method.response.header.Access-Control-Allow-Headers: true
+          method.response.header.Access-Control-Allow-Methods: true
+          method.response.header.Access-Control-Allow-Origin: true
+  permissionGetUser:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref lambdaFunctionGetUser
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${UserApi}/*/GET/users/{id}'
+  iamRolePutUser:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CloudWatchLogsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: "*"
+        - PolicyName: PutUserPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "dynamodb:PutItem"
+                Resource: !GetAtt userDynamodbTable.Arn
+  lambdaFunctionCreateUser:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: 'Lambda function to put user details'
+      FunctionName: putUserFunction 
+      Handler: putUser.handler
+      MemorySize: 128
+      Role: !GetAtt iamRolePutUser.Arn
+      Runtime: nodejs18.x
+      Timeout: 60 # Timeout in seconds
+      Code:
+        S3Bucket: !Ref ExistingBucketName
+        S3Key: !Ref CodeS3Key
+      Environment:
+        Variables: 
+          DYNAMODB_TABLE: !Ref userDynamodbTable
+      Tags:
+        - Key: PutUserFunction
+          Value: lambdaFunctionCreateUser
+  methodPutUser:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: POST
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref userAuthorizer
+      ResourceId: !Ref UsertApiResource
+      RestApiId: !Ref UserApi
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaFunctionCreateUser.Arn}/invocations'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,PUT,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+      - StatusCode: 200
+        ResponseParameters:
+          method.response.header.Access-Control-Allow-Headers: true
+          method.response.header.Access-Control-Allow-Methods: true
+          method.response.header.Access-Control-Allow-Origin: true
+  permissionPutUser:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref lambdaFunctionCreateUser
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${UserApi}/*/PUT/users'
+  iamroleUpdateUser:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CloudWatchLogsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: "*"
+        - PolicyName: UpdateUserPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: 
+                  - "dynamodb:UpdateItem"
+                Resource: !GetAtt userDynamodbTable.Arn
+  lambdaFunctionUpdateUser:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: 'Lambda function to update user details'
+      FunctionName: updateUserFunction 
+      Handler: updateUser.handler
+      MemorySize: 128
+      Role: !GetAtt iamroleUpdateUser.Arn
+      Runtime: nodejs18.x
+      Timeout: 60
+      Code:
+        S3Bucket: !Ref ExistingBucketName
+        S3Key: !Ref CodeS3Key
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref userDynamodbTable
+  updateUserMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: PUT
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref userAuthorizer
+      ResourceId: !Ref UsertApiResource
+      RestApiId: !Ref UserApi
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaFunctionUpdateUser.Arn}/invocations'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,PUT,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+      - StatusCode: 200
+        ResponseParameters:
+          method.response.header.Access-Control-Allow-Headers: true
+          method.response.header.Access-Control-Allow-Methods: true
+          method.response.header.Access-Control-Allow-Origin: true
+  permissionUpdateUser:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref lambdaFunctionUpdateUser
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${UserApi}/*/POST/users'
+  iamRoleListUsers:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CloudWatchLogsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: "*"
+        - PolicyName: ListUsersPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: 
+                  - "dynamodb:Scan"
+                  - "dynamodb:Query"
+                Resource: !GetAtt userDynamodbTable.Arn
+  lambdaFunctionListUsers:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: 'Lambda function to list all users'
+      FunctionName: listUsersFunction 
+      Handler: listUsers.handler
+      MemorySize: 128
+      Role: !GetAtt iamRoleListUsers.Arn
+      Runtime: nodejs18.x
+      Timeout: 60
+      Code:
+        S3Bucket: !Ref ExistingBucketName
+        S3Key: !Ref CodeS3Key
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref userDynamodbTable
+  methodListUsers:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref userAuthorizer
+      ResourceId: !Ref UsertApiResource
+      RestApiId: !Ref UserApi
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaFunctionListUsers.Arn}/invocations'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,PUT,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+      - StatusCode: 200
+        ResponseParameters:
+          method.response.header.Access-Control-Allow-Headers: true
+          method.response.header.Access-Control-Allow-Methods: true
+          method.response.header.Access-Control-Allow-Origin: true
+  permissionListUsers:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref lambdaFunctionListUsers
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${UserApi}/*/GET/users'
+  deploymentUserApi:
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId: !Ref UserApi
+    DependsOn:
+      - methodGetUser
+      - methodPutUser
+      - updateUserMethod
+      - methodListUsers
+      - ApiGatewayAccount
+  ApiGatewayStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      StageName: !Ref Environment
+      RestApiId: !Ref UserApi
+      DeploymentId: !Ref deploymentUserApi
+      MethodSettings:
+        - HttpMethod: "*"
+          ResourcePath: "/*"
+          MetricsEnabled: true
+          LoggingLevel: INFO
+Outputs:
+  GetUserApiUrl:
+    Description: 'URL for the Get User API'
+    Value: !Sub 'https://${UserApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/users'
