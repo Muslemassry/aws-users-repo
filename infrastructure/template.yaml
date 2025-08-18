@@ -8,7 +8,7 @@ Parameters:
       - prod
       - test
     Description: 'Environment for the resources'
-  ExistingBucketName:
+  BucketName:
     Type: String
     Description: 'Name of the existing S3 bucket to use'
   CodeS3Key:
@@ -129,7 +129,7 @@ Resources:
       Runtime: nodejs18.x
       Timeout: 60 # Timeout in seconds  
       Code: 
-        S3Bucket: !Ref ExistingBucketName
+        S3Bucket: !Ref BucketName
         S3Key: !Ref CodeS3Key
       Environment:
         Variables:
@@ -236,7 +236,7 @@ Resources:
       Runtime: nodejs18.x
       Timeout: 60 # Timeout in seconds
       Code:
-        S3Bucket: !Ref ExistingBucketName
+        S3Bucket: !Ref BucketName
         S3Key: !Ref CodeS3Key
       Environment:
         Variables: 
@@ -317,7 +317,7 @@ Resources:
       Runtime: nodejs18.x
       Timeout: 60
       Code:
-        S3Bucket: !Ref ExistingBucketName
+        S3Bucket: !Ref BucketName
         S3Key: !Ref CodeS3Key
       Environment:
         Variables:
@@ -396,7 +396,7 @@ Resources:
       Runtime: nodejs18.x
       Timeout: 60
       Code:
-        S3Bucket: !Ref ExistingBucketName
+        S3Bucket: !Ref BucketName
         S3Key: !Ref CodeS3Key
       Environment:
         Variables:
