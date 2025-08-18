@@ -10,6 +10,8 @@ phases:
       - cd src/lambda
       - ls
       - pwd
+      - npm init -y
+      - npm install @aws-sdk/client-dynamodb @aws-sdk/lib-dynamodb
       - npm ci
   build:
     commands:
