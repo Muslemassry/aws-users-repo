@@ -8,6 +8,8 @@ phases:
     commands:
       - echo Logging in to Amazon ECR...
       - cd src/lambda
+      - ls
+      - pwd
       - npm ci
   build:
     commands:
