@@ -22,6 +22,9 @@ phases:
   post_build:
     commands:
       - echo Build completed on `date`
+      - echo "Uploading Lambda code to S3..."
+      - aws s3 cp user-functions.zip s3://${ARTIFACTS_BUCKET}/lambda-user-code/user-functions.zip
+      - echo "Lambda code uploaded successfully"
 
 artifacts:
   files:
