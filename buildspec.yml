@@ -16,9 +16,9 @@ phases:
   build:
     commands:
       - echo Build started on `date`
+      - zip user-functions.zip *.js
       - cd ../../
-      # Package Lambda function
-      - zip -r user-functions.zip src/lambda/
+      - cp src/lambda/user-functions.zip .
   post_build:
     commands:
       - echo Build completed on `date`
