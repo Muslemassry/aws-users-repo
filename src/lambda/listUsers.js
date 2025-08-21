@@ -23,7 +23,7 @@ exports.handler = async (event) => {
                 "Access-Control-Allow-Headers": "Content-Type,X-Amz-Date,Authorization,X-Api-Key",
                 "Access-Control-Allow-Methods": "GET,PUT,POST,DELETE,OPTIONS"
             },
-            body: JSON.stringify({ users: data.Items }),
+            body: JSON.stringify({ users: data.Items, value: "temp value" }),
         };
     } catch (error) {
         console.error(error);
