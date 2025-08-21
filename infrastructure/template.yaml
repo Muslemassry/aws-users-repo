@@ -457,6 +457,6 @@ Outputs:
   GetUserApiUrl:
     Description: 'URL for the Get User API'
     Value: !Sub 'https://${UserApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/users'
-  Client_ID:
+  ClientId:
     Description: 'Client ID for the User API'
     Value: !Sub '${userPoolClient.ClientId}'
