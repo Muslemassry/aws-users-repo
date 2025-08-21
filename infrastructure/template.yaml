@@ -57,7 +57,7 @@ Resources:
       ProvisionedThroughput:
         ReadCapacityUnits: 5
         WriteCapacityUnits: 5
-      TableName: !Sub 'user-${Environment}'
+      TableName: !Sub 'user-1-${Environment}'
   userpool:
     Type: AWS::Cognito::UserPool
     Properties:
